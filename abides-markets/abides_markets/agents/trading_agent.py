@@ -46,6 +46,7 @@ from ..messages.query import (
 from ..orders import Order, LimitOrder, MarketOrder, Side
 from .financial_agent import FinancialAgent
 from .exchange_agent import ExchangeAgent
+from .circuit_breaker_exchange_agent import CircuitBreakerExchangeAgent
 
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ class TradingAgent(FinancialAgent):
 
         # Find an exchange with which we can place orders.  It is guaranteed
         # to exist by now (if there is one).
-        self.exchange_id: int = self.kernel.find_agents_by_type(ExchangeAgent)[0]
+        self.exchange_id: int = self.kernel.find_agents_by_type(CircuitBreakerExchangeAgent)[0]
 
         logger.debug(
             f"Agent {self.id} requested agent of type Agent.ExchangeAgent.  Given Agent ID: {self.exchange_id}"

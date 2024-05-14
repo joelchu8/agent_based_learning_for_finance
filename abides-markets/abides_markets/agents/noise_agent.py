@@ -8,6 +8,7 @@ from abides_core import Message, NanosecondTime
 from ..generators import OrderSizeGenerator
 from ..models.limit_price_model import LimitPriceModel
 from ..messages.query import QuerySpreadResponseMsg
+from ..messages.circuit_breaker import CircuitBreakerStart, CircuitBreakerEnd
 from ..orders import Side, LimitOrder
 from .trading_agent import TradingAgent
 
@@ -60,6 +61,8 @@ class NoiseAgent(TradingAgent):
         self.mean_wakeup_gap = mean_wakeup_gap
 
         self.order_size_model = order_size_model  # Probabilistic model for order size
+
+        self.circuit_breaker: bool = False
 
     def kernel_starting(self, start_time: NanosecondTime) -> None:
         # self.kernel is set in Agent.kernel_initializing()
@@ -137,6 +140,9 @@ class NoiseAgent(TradingAgent):
             self.set_wakeup(current_time + self.get_wake_frequency())
 
     def placeOrder(self) -> None:
+        if self.circuit_breaker:
+            return
+
         # Probabilistically place order in random direction
 
         bid, bid_vol, ask, ask_vol = self.get_known_bid_ask(self.symbol)
@@ -175,6 +181,11 @@ class NoiseAgent(TradingAgent):
         # We have been awakened by something other than our scheduled wakeup.
         # If our internal state indicates we were waiting for a particular event,
         # check if we can transition to a new state.
+
+        if isinstance(message, CircuitBreakerStart):
+            self.circuit_breaker = True
+        elif isinstance(message, CircuitBreakerEnd):
+            self.circuit_breaker = False
 
         if self.state == "AWAITING_SPREAD":
             # We were waiting to receive the current spread/book.  Since we don't currently

@@ -1,4 +1,4 @@
-# Flash Crash configuration:
+# Flash Crash with circuit breaker configuration:
 
 import os
 from datetime import datetime
@@ -8,7 +8,7 @@ import pandas as pd
 
 from abides_core.utils import get_wake_time, str_to_ns
 from abides_markets.agents import (
-    ExchangeAgent,
+    CircuitBreakerExchangeAgent,
     NoiseAgent,
     ValueAgent,
     AdaptiveMarketMakerAgent,
@@ -73,6 +73,7 @@ def build_config(
     # date&time
     DATE = int(pd.to_datetime(date).to_datetime64())
     MKT_OPEN = DATE + str_to_ns("09:30:00")
+    # MKT_OPEN = DATE + str_to_ns("09:35:58")
     MKT_CLOSE = DATE + str_to_ns(end_time)
 
     # oracle
@@ -84,13 +85,13 @@ def build_config(
 
     agents.extend(
         [
-            ExchangeAgent(
+            CircuitBreakerExchangeAgent(
                 id=0,
                 mkt_open=MKT_OPEN,
                 mkt_close=MKT_CLOSE,
                 symbols=[ticker],
-                name="ExchangeAgent",
-                type="ExchangeAgent",
+                name="CircuitBreakerExchangeAgent",
+                type="CircuitBreakerExchangeAgent",
                 random_state=np.random.RandomState(
                     seed=np.random.randint(low=0, high=2**32, dtype="uint64")),
                 book_logging=exchange_params.book_logging,
@@ -100,10 +101,14 @@ def build_config(
                 computation_delay=exchange_params.computation_delay,
                 stream_history=exchange_params.stream_history,
                 use_metric_tracker=exchange_params.use_metric_tracker,
+                circuit_breaker_threshold = 0.02,
+                circuit_breaker_lookback_period = "1min",
+                circuit_breaker_cooldown = "1min",
+                circuit_breaker_check_period = "1min",
             )
         ]
     )
-    agent_types.extend(["ExchangeAgent"])
+    agent_types.extend(["CircuitBreakerExchangeAgent"])
     agent_count += 1
 
     agents.extend(

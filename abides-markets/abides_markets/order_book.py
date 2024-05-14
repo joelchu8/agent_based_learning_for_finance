@@ -72,6 +72,15 @@ class OrderBook:
         self.buy_transactions: List[Tuple[NanosecondTime, int]] = []
         self.sell_transactions: List[Tuple[NanosecondTime, int]] = []
 
+        self.executed_prices = []
+    
+    def get_executed_prices(self):
+        prices = self.executed_prices.copy()
+        print(len(prices))
+        self.executed_prices.clear()
+        # print(prices)
+        return prices
+
     def handle_limit_order(self, order: LimitOrder, quiet: bool = False) -> None:
         """Matches a limit order or adds it to the order book.
 
@@ -322,6 +331,8 @@ class OrderBook:
             if self.owner.book_logging == True:
                 # append current OB state to book_log2
                 self.append_book_log2()
+
+            self.executed_prices.append(matched_order.fill_price)
 
             # Return (only the executed portion of) the matched order.
             return matched_order

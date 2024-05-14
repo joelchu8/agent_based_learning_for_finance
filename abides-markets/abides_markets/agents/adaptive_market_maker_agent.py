@@ -20,6 +20,7 @@ from ..messages.marketdata import (
 
 )
 from ..messages.query import QuerySpreadResponseMsg, QueryTransactedVolResponseMsg
+from ..messages.circuit_breaker import CircuitBreakerStart, CircuitBreakerEnd
 from ..orders import Side, LimitOrder
 from .trading_agent import TradingAgent
 
@@ -123,6 +124,7 @@ class AdaptiveMarketMakerAgent(TradingAgent):
         self.LIQUIDITY_DROPOUT_WARNING: str = f"Liquidity dropout for agent {self.name}."
         self.delta_c: float = delta_c  # proportion of orders to cancel at each wakeup or market event
 
+        self.circuit_breaker: bool = False
 
     def initialise_state(self) -> Dict[str, bool]:
         """Returns variables that keep track of whether spread and transacted volume have been observed."""
@@ -240,6 +242,12 @@ class AdaptiveMarketMakerAgent(TradingAgent):
 
         if self.last_spread is not None and self.is_adaptive:
             self._adaptive_update_window_and_tick_size()
+
+        if isinstance(message, CircuitBreakerStart):
+            self.circuit_breaker = True
+        elif isinstance(message, CircuitBreakerEnd):
+            self.circuit_breaker = False
+
 
         if isinstance(message, BookImbalanceDataMsg):
             if message.stage == MarketDataEventMsg.Stage.START:
@@ -433,6 +441,9 @@ class AdaptiveMarketMakerAgent(TradingAgent):
         Arguments:
             mid: Mid price.
         """
+
+        if self.circuit_breaker:
+            return
 
         bid_orders, ask_orders = self.compute_orders_to_place(mid)
 

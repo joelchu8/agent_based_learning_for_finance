@@ -7,6 +7,7 @@ import numpy as np
 from abides_core import Message, NanosecondTime
 
 from ..messages.query import QuerySpreadResponseMsg
+from ..messages.circuit_breaker import CircuitBreakerStart, CircuitBreakerEnd
 from ..orders import Side, LimitOrder
 from ..models.limit_price_model import LimitPriceModel
 from .trading_agent import TradingAgent
@@ -62,6 +63,8 @@ class ValueAgent(TradingAgent):
         self.limit_price_model = limit_price_model
 
         self.depth_spread: int = 2
+
+        self.circuit_breaker: bool = False
 
     def kernel_starting(self, start_time: NanosecondTime) -> None:
         # self.kernel is set in Agent.kernel_initializing()
@@ -159,6 +162,9 @@ class ValueAgent(TradingAgent):
         # used for surplus calculation
         r_T = self.updateEstimates()
 
+        if self.circuit_breaker:
+            return
+
         bid, bid_vol, ask, ask_vol = self.get_known_bid_ask(self.symbol)
 
         if bid and ask:
@@ -212,6 +218,11 @@ class ValueAgent(TradingAgent):
         # We have been awakened by something other than our scheduled wakeup.
         # If our internal state indicates we were waiting for a particular event,
         # check if we can transition to a new state.
+
+        if isinstance(message, CircuitBreakerStart):
+            self.circuit_breaker = True
+        elif isinstance(message, CircuitBreakerEnd):
+            self.circuit_breaker = False
 
         if self.state == "AWAITING_SPREAD":
             # We were waiting to receive the current spread/book.  Since we don't currently

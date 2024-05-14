@@ -9,6 +9,7 @@ from abides_core.utils import str_to_ns
 from ..generators import OrderSizeGenerator
 from ..models.limit_price_model import LimitPriceModel
 from ..messages.query import QueryTransactedVolResponseMsg
+from ..messages.circuit_breaker import CircuitBreakerStart, CircuitBreakerEnd
 from ..orders import Side
 from .trading_agent import TradingAgent
 
@@ -68,6 +69,8 @@ class InstitutionalTraderAgent(TradingAgent):
 
         self.order_size_model = order_size_model  # Probabilistic model for order size
         self.limit_price_model = limit_price_model
+
+        self.circuit_breaker: bool = False
 
     def kernel_starting(self, start_time: NanosecondTime) -> None:
         # self.kernel is set in Agent.kernel_initializing()
@@ -162,6 +165,9 @@ class InstitutionalTraderAgent(TradingAgent):
             self.state = "ACTIVE"
 
     def placeOrder(self, current_time: NanosecondTime) -> None:
+        if self.circuit_breaker:
+            return
+        
         if current_time >= self.trigger_time and self.symbol in self.holdings and self.holdings[self.symbol] > 0:
             
             buy_transacted_volume = self.transacted_volume[self.symbol][0]
@@ -172,7 +178,8 @@ class InstitutionalTraderAgent(TradingAgent):
             order_size = min(self.holdings[self.symbol], int(total_transacted_volume * self.sell_volume_factor * self.inventory))
 
             # place market sell order
-            self.place_market_order(self.symbol, order_size, Side.ASK)
+            if order_size > 0:
+                self.place_market_order(self.symbol, order_size, Side.ASK)
 
     def receive_message(
         self, current_time: NanosecondTime, sender_id: int, message: Message
@@ -184,8 +191,13 @@ class InstitutionalTraderAgent(TradingAgent):
         # If our internal state indicates we were waiting for a particular event,
         # check if we can transition to a new state.
 
+        if isinstance(message, CircuitBreakerStart):
+            self.circuit_breaker = True
+        elif isinstance(message, CircuitBreakerEnd):
+            self.circuit_breaker = False
+
         if self.state == "AWAITING_TRANSACTED_VOLUME":
-            # We were waiting to receive recentr transacted volume.
+            # We were waiting to receive recent transacted volume.
 
             if isinstance(message, QueryTransactedVolResponseMsg):
                 # This is what we were waiting for.

@@ -2,7 +2,7 @@ import datetime as dt
 import logging
 import warnings
 from abc import ABC
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, DefaultDict, Dict, List, Optional, Tuple
@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 pd.set_option("display.max_rows", 500)
 
 
-class ExchangeAgent(FinancialAgent):
+class CircuitBreakerExchangeAgent(FinancialAgent):
     """
     The ExchangeAgent expects a numeric agent id, printable name, agent type, timestamp
     to open and close trading, a list of equity symbols for which it should create order
@@ -162,6 +162,7 @@ class ExchangeAgent(FinancialAgent):
         circuit_breaker_threshold: float = 0,
         circuit_breaker_lookback_period: str = "",
         circuit_breaker_cooldown: str = "",
+        circuit_breaker_check_period: str = "",
     ) -> None:
         super().__init__(id, name, type, random_state, log_orders, log_orders)
 
@@ -202,7 +203,7 @@ class ExchangeAgent(FinancialAgent):
 
         if use_metric_tracker:
             # Create a metric tracker for each symbol.
-            self.metric_trackers: Dict[str, ExchangeAgent.MetricTracker] = {
+            self.metric_trackers: Dict[str, CircuitBreakerExchangeAgent.MetricTracker] = {
                 symbol: self.MetricTracker() for symbol in symbols
             }
 
@@ -211,7 +212,7 @@ class ExchangeAgent(FinancialAgent):
         # frequency (min number of ns between messages), last agent update timestamp]
         # e.g. {101 : {'AAPL' : [1, 10, NanosecondTime(10:00:00)}}
         self.data_subscriptions: DefaultDict[
-            str, List[ExchangeAgent.BaseDataSubscription]
+            str, List[CircuitBreakerExchangeAgent.BaseDataSubscription]
         ] = defaultdict(list)
 
         # Store a list of agents who have requested market close price information.
@@ -225,6 +226,8 @@ class ExchangeAgent(FinancialAgent):
         self.circuit_breaker_cooldown: NanosecondTime = str_to_ns(circuit_breaker_cooldown)  # how long the circuit breaker lasts
         self.circuit_breaker_active: bool = False
         self.circuit_breaker_start_time: Optional[NanosecondTime] = None
+        self.circuit_breaker_check_period: str = circuit_breaker_check_period
+        self.price_deque = deque()
 
     def kernel_initializing(self, kernel: "Kernel") -> None:
         """
@@ -302,21 +305,54 @@ class ExchangeAgent(FinancialAgent):
 
     def wakeup(self, current_time: NanosecondTime):
         super().wakeup(current_time)
+        # Set wakeup at market open to begin checking for circuit breaker trigger
+        if current_time < self.mkt_open:
+            # self.set_wakeup(self.mkt_open)
+            self.set_wakeup(self.mkt_open + str_to_ns(self.circuit_breaker_lookback_period))
 
-        # Check for circuit breaker
-        if not self.circuit_breaker_active:
-            current_average = calculate_moving_average(self.circuit_breaker_lookback_period)
+        # Check if circuit breaker should end
+        if self.circuit_breaker_active and current_time - self.circuit_breaker_cooldown >= self.circuit_breaker_start_time:
+            print("CIRCUIT BREAKER END")
+            self.circuit_breaker_active = False
+            # self.update_moving_average(self.symbols[0], current_time, after_circuit_breaker=True)
+            # self.initialise_moving_average(self.circuit_breaker_lookback_period, self.symbols[0], current_time)
+            # self.set_wakeup(current_time + self.circuit_breaker_lookback_period)
+            for agent in self.market_close_price_subscriptions:
+                self.send_message(agent, CircuitBreakerEnd())
+
+        # Check for circuit breaker (for single symbol)
+        
+        if current_time >= self.mkt_open and not self.circuit_breaker_active:
+            if self.last_average is None:
+                # self.last_average = self.initialise_moving_average(self.circuit_breaker_lookback_period, self.symbols[0], current_time)
+                self.last_average = self.calculate_moving_average()
+                current_average = self.last_average
+            else:
+                # current_average = self.update_moving_average(self.symbols[0], current_time)
+                current_average = self.calculate_moving_average()
+            # print(self.mkt_open)
+            # print(current_time)
+        # if current_time >= self.mkt_open + str_to_ns("10min") and not self.circuit_breaker_active:
             percentage_change = abs(current_average - self.last_average) / self.last_average
+            print(f"percentage change: {percentage_change}")
+            print(f"current average: {current_average}")
+            # print(self.last_average)
             if percentage_change > self.circuit_breaker_threshold:
+                # print(f"percentage change: {percentage_change}")
+                print("CIRCUIT BREAKER")
+                self.circuit_breaker_active = True
                 self.circuit_breaker_start_time = current_time
+                self.set_wakeup(current_time + self.circuit_breaker_cooldown)
                 for agent in self.market_close_price_subscriptions:
                     self.send_message(agent, CircuitBreakerStart(current_time, self.circuit_breaker_cooldown))
 
-            self.last_average = current_average # should this be outside the if?
+            self.last_average = current_average
+            self.set_wakeup(current_time + str_to_ns(self.circuit_breaker_check_period))  # check every 5 seconds, originally every order execution but that was very computationally expensive
+            
         
-        if self.circuit_breaker_active and current_time >= self.circuit_breaker_start_time:
-            for agent in self.market_close_price_subscriptions:
-                    self.send_message(agent, CircuitBreakerEnd())
+        # if self.circuit_breaker_active and current_time >= self.circuit_breaker_start_time:
+        #     for agent in self.market_close_price_subscriptions:
+        #             self.send_message(agent, CircuitBreakerEnd())
 
         # If we have reached market close, send market close price messages to all agents
         # that requested them.
@@ -327,6 +363,89 @@ class ExchangeAgent(FinancialAgent):
 
             for agent in self.market_close_price_subscriptions:
                 self.send_message(agent, message)
+
+    def calculate_moving_average(self):
+        new_prices = self.order_books[self.symbols[0]].get_executed_prices()
+        # print(new_prices)
+        self.price_deque.extend(new_prices)
+        # print(self.price_deque)
+
+        while len(self.price_deque) > 3000:
+            self.price_deque.popleft()
+        
+        print(len(self.price_deque))
+        total_sum = sum(self.price_deque)
+        average = total_sum / len(self.price_deque)
+        # average = total_sum / 2000
+
+        return average
+
+    def update_moving_average(self, symbol: str, current_time: NanosecondTime, after_circuit_breaker: bool = False) -> float:
+        lookback = str_to_ns(self.circuit_breaker_lookback_period)
+        # window_start = current_time - lookback if not after_circuit_breaker else current_time - lookback - self.circuit_breaker_cooldown
+        window_start = current_time - lookback
+
+        # # remove orders that are older than our lookback period
+        # while self.price_deque and self.price_deque[0][1] < window_start:
+        #     self.price_deque.popleft()
+        # # _, order_time = self.price_deque[0]
+        # # while order_time < window_start:
+        # #     self.price_deque.popleft()
+        # #     if self.price_deque:
+        # #         _, order_time = self.price_deque[0]
+        # #     else:
+        # #         break
+        
+        # add new orders since our last update
+        order_history = self.order_books[symbol].history
+        since_last_update = str_to_ns(self.circuit_breaker_check_period)
+        # update_window_start = current_time - since_last_update if not after_circuit_breaker else current_time - since_last_update - self.circuit_breaker_cooldown
+        update_window_start = current_time - since_last_update
+        num_of_new_orders = 0
+
+        for entry in reversed(order_history):
+            if entry['time'] < update_window_start:
+                break
+            if entry['type'] == "EXEC":
+                if entry['price'] is not None:
+                    self.price_deque.append((entry['price'], entry['time']))
+                else:
+                    corresponding_order = next(filter(lambda order: order['order_id'] == entry['order_id'], order_history))
+                    self.price_deque.append((corresponding_order['price'], entry['time']))
+                num_of_new_orders += 1
+        
+        for _ in range(num_of_new_orders):
+            self.price_deque.popleft()
+
+        total_price = sum(item[0] for item in self.price_deque.copy())
+        # print(self.price_deque)
+        # print(len(self.price_deque))
+        average = total_price / lookback
+
+        return average
+
+    def initialise_moving_average(self, lookback_period: str, symbol: str, current_time: NanosecondTime) -> float:
+        time = str_to_ns(lookback_period)
+        window_start = current_time - time
+        
+        order_history = self.order_books[symbol].history
+
+        for entry in reversed(order_history):
+            if entry['time'] < window_start:
+                break
+            if entry['type'] == "EXEC":
+                if entry['price'] is not None:
+                    # total_price += entry['price']
+                    self.price_deque.append((entry['price'], entry['time']))
+                else:
+                    corresponding_order = next(filter(lambda order: order['order_id'] == entry['order_id'], order_history))
+                    # total_price += corresponding_order['price']
+                    self.price_deque.append((corresponding_order['price'], entry['time']))
+        
+        total_price = sum(item[0] for item in self.price_deque.copy())
+        average = total_price / time
+
+        return average
 
     def receive_message(
         self, current_time: NanosecondTime, sender_id: int, message: Message
@@ -600,11 +719,12 @@ class ExchangeAgent(FinancialAgent):
                     f"Limit Order discarded. Unknown symbol: {message.order.symbol}"
                 )
             else:
-                # Hand the order to the order book for processing.
-                self.order_books[message.order.symbol].handle_limit_order(
-                    deepcopy(message.order)
-                )
-                self.publish_order_book_data()
+                if not self.circuit_breaker_active:
+                    # Hand the order to the order book for processing.
+                    self.order_books[message.order.symbol].handle_limit_order(
+                        deepcopy(message.order)
+                    )
+                    self.publish_order_book_data()
 
         elif isinstance(message, MarketOrderMsg):
             logger.debug(
@@ -616,11 +736,12 @@ class ExchangeAgent(FinancialAgent):
                     f"Market Order discarded. Unknown symbol: {message.order.symbol}"
                 )
             else:
-                # Hand the market order to the order book for processing.
-                self.order_books[message.order.symbol].handle_market_order(
-                    deepcopy(message.order)
-                )
-                self.publish_order_book_data()
+                if not self.circuit_breaker_active:
+                    # Hand the market order to the order book for processing.
+                    self.order_books[message.order.symbol].handle_market_order(
+                        deepcopy(message.order)
+                    )
+                    self.publish_order_book_data()
 
         elif isinstance(message, CancelOrderMsg):
             tag = message.tag
@@ -735,7 +856,7 @@ class ExchangeAgent(FinancialAgent):
                     data_sub.last_update_ts = book.last_update_ts
 
     def handle_frequency_based_data_subscription(
-        self, symbol: str, data_sub: "ExchangeAgent.FrequencyBasedSubscription"
+        self, symbol: str, data_sub: "CircuitBreakerExchangeAgent.FrequencyBasedSubscription"
     ) -> List[Message]:
         book = self.order_books[symbol]
 
@@ -808,7 +929,7 @@ class ExchangeAgent(FinancialAgent):
         return messages
 
     def handle_event_based_data_subscription(
-        self, symbol: str, data_sub: "ExchangeAgent.EventBasedSubscription"
+        self, symbol: str, data_sub: "CircuitBreakerExchangeAgent.EventBasedSubscription"
     ) -> List[Message]:
         book = self.order_books[symbol]
         messages = []
@@ -925,6 +1046,33 @@ class ExchangeAgent(FinancialAgent):
             if self.log_orders:
                 self.logEvent(message.type(), message.order.to_dict())
                 self.log_order_message(message)
+
+            # # check for circuit breaker for every order execution
+            # if isinstance(message, OrderExecutedMsg):
+            #     order_time = message.order.time_placed
+                        
+            #     # if self.last_average is None:
+            #     #     self.last_average = self.calculate_moving_average(self.circuit_breaker_lookback_period, self.symbols[0], current_time)
+
+            #     # Check for circuit breaker (for single symbol)
+            #     if not self.circuit_breaker_active:
+            #         current_average = self.calculate_moving_average(self.circuit_breaker_lookback_period, self.symbols[0], order_time)
+            #         percentage_change = abs(current_average - self.last_average) / (self.last_average + 1e-9)
+            #         if percentage_change > self.circuit_breaker_threshold:
+            #             print("CIRCUIT BREAKER")
+            #             self.circuit_breaker_active = True
+            #             self.set_wakeup(self.circuit_breaker_cooldown)  # set wakeup to set circuit breaker active flag to False
+            #             self.circuit_breaker_start_time = order_time
+            #             for agent in self.market_close_price_subscriptions:
+            #                 self.send_message(agent, CircuitBreakerStart(order_time, self.circuit_breaker_cooldown))
+
+            #         self.last_average = current_average
+                    
+                
+            #     # if self.circuit_breaker_active and current_time >= self.circuit_breaker_start_time:
+            #     #     for agent in self.market_close_price_subscriptions:
+            #     #             self.send_message(agent, CircuitBreakerEnd())
+
         else:
             # Other message types incur only the currently-configured computation delay for this agent.
             super().send_message(recipient_id, message)

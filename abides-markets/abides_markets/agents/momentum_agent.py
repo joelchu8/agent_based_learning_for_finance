@@ -7,6 +7,7 @@ from abides_core.utils import str_to_ns
 
 from ..messages.marketdata import MarketDataMsg, L2SubReqMsg, L2DataMsg
 from ..messages.query import QuerySpreadResponseMsg
+from ..messages.circuit_breaker import CircuitBreakerStart, CircuitBreakerEnd
 from ..orders import Side, LimitOrder
 from .trading_agent import TradingAgent
 
@@ -70,6 +71,8 @@ class MomentumAgent(TradingAgent):
         self.momentum_signal: float = 0.
         self.momentum_signal_list: List = []
 
+        self.circuit_breaker: bool = False
+
     def kernel_starting(self, start_time: NanosecondTime) -> None:
         super().kernel_starting(start_time)
 
@@ -97,6 +100,12 @@ class MomentumAgent(TradingAgent):
     ) -> None:
         """Momentum agent actions are determined after obtaining the best bid and ask in the LOB"""
         super().receive_message(current_time, sender_id, message)
+
+        if isinstance(message, CircuitBreakerStart):
+            self.circuit_breaker = True
+        elif isinstance(message, CircuitBreakerEnd):
+            self.circuit_breaker = False
+
         if (
             not self.subscribe
             and self.state == "AWAITING_SPREAD"
@@ -142,6 +151,9 @@ class MomentumAgent(TradingAgent):
     
 
     def place_orders(self, ref_prc: float) -> None:
+        if self.circuit_breaker:
+            return
+
         """Momentum Agent actions logic"""
         if np.abs(self.momentum_signal) < 1e-6:
             return

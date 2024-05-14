@@ -7,3 +7,4 @@ from .trading_agent import TradingAgent
 from .value_agent import ValueAgent
 from .momentum_agent import MomentumAgent
 from .institutional_trader_agent import InstitutionalTraderAgent
+from .circuit_breaker_exchange_agent import CircuitBreakerExchangeAgent
