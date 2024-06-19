@@ -107,24 +107,24 @@ class OrderBook:
     def check_circuit_breaker(self, price):
         if self.trigger == "VOLUME":
             if len(self.owner.price_deque) > self.volume_threshold:
-                self.owner.activate_circuit_breaker()
+                self.send_message()
                 return True
         elif self.trigger == "IMBALANCE":
             imbalance, side = self.get_imbalance()
             if side == Side.ASK and imbalance >= 1.0:
                 print(imbalance)
-                self.owner.activate_circuit_breaker()
+                self.send_message()
                 return True
         elif self.trigger == "LULD":
             average = self.owner.get_average()
             percentage_change = abs(price - average) / average
             if percentage_change >= self.owner.circuit_breaker_threshold_three:
-                self.owner.activate_circuit_breaker()
+                self.send_message()
                 return True
         elif self.trigger == "DEVIATION":
             percentage_change = abs(price - self.opening_price) / self.opening_price
             if percentage_change >= self.owner.circuit_breaker_threshold:
-                self.owner.activate_circuit_breaker()
+                self.send_message()
                 return True
             
         return False
