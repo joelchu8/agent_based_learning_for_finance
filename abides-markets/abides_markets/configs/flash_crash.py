@@ -16,7 +16,7 @@ from abides_markets.agents import (
     InstitutionalTraderAgent,
 )
 from abides_markets.models import OrderSizeModel, LimitPriceModel
-from abides_markets.oracles import FlashCrashOracle, GeometricBrownianMotionOracle
+from abides_markets.oracles import FlashCrashOracle, GeometricBrownianMotionOracle, MeanRevertingOracle, SparseMeanRevertingOracle
 from abides_markets.utils import generate_latency_model
 from abides_markets.configs.agent_params import ExchangeConfig, NoiseAgentConfig, ValueAgentConfig, MarketMakerAgentConfig, MomentumAgentConfig, FlashCrashOracleConfig, InstitutionalTraderAgentConfig, GBMOracleConfig
 
@@ -77,7 +77,26 @@ def build_config(
 
     # oracle
     # oracle = FlashCrashOracle(ticker, MKT_OPEN, S0=r_bar, mu=oracle_params.mu, sigma=oracle_params.sigma)
-    oracle = GeometricBrownianMotionOracle(ticker, MKT_OPEN, S0=r_bar, mu=oracle_params.mu, sigma=oracle_params.sigma)
+    # oracle = GeometricBrownianMotionOracle(ticker, MKT_OPEN, S0=r_bar, mu=oracle_params.mu, sigma=oracle_params.sigma)
+    # symbols = {ticker: {"r_bar": 10_000,
+    # "kappa": 1.67e-16,
+    # "sigma_s": 0,}}
+    symbols = {
+        ticker: {
+            "r_bar": 10_000,
+            "kappa": 1.67e-16,
+            "sigma_s": 0,
+            "fund_vol": 6e-4,
+            "megashock_lambda_a": 2.77778e-18,
+            "megashock_mean": 10,
+            "megashock_var": 500,
+            "random_state": np.random.RandomState(
+                seed=np.random.randint(low=0, high=2**32, dtype="uint64")
+            ),
+        }
+    }
+    # oracle = MeanRevertingOracle(MKT_OPEN, MKT_CLOSE, symbols)
+    oracle = SparseMeanRevertingOracle(MKT_OPEN, MKT_CLOSE, symbols)
 
     # Agent configuration
     agent_count, agents, agent_types = 0, [], []
@@ -119,9 +138,9 @@ def build_config(
                 limit_price_model=LIMIT_PRICE_MODEL,
                 random_state=np.random.RandomState(
                     seed=np.random.randint(low=0, high=2**32, dtype="uint64")),
-                inventory=1e8,
+                inventory=institutional_params.inventory,
                 sell_frequency=institutional_params.sell_frequency,
-                sell_volume_factor=1000,
+                sell_volume_factor=institutional_params.sell_volume_factor,
             )
         ]
     )

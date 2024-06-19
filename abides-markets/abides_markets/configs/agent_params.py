@@ -83,7 +83,7 @@ class MomentumAgentConfig:
         self.subscribe = subscribe  # Flag to determine whether to subscribe to data or use polling mechanism
 
 class InstitutionalTraderAgentConfig:
-    def __init__(self, inventory=1e9, sell_frequency="00:00:02", sell_volume_factor=0.1):
+    def __init__(self, inventory=1e13, sell_frequency="00:00:02", sell_volume_factor=1000):
         self.inventory = inventory  # how much inventory agent holds to sell off
         self.sell_frequency = sell_frequency  # length of time between each sell order in crash
         self.sell_volume_factor = sell_volume_factor  # factor to multiply by for volume of sell order

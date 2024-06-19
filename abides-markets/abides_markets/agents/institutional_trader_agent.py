@@ -71,6 +71,7 @@ class InstitutionalTraderAgent(TradingAgent):
         self.limit_price_model = limit_price_model
 
         self.circuit_breaker: bool = False
+        # self.circuit_breaker_activated: bool = False
 
     def kernel_starting(self, start_time: NanosecondTime) -> None:
         # self.kernel is set in Agent.kernel_initializing()
@@ -165,6 +166,9 @@ class InstitutionalTraderAgent(TradingAgent):
             self.state = "ACTIVE"
 
     def placeOrder(self, current_time: NanosecondTime) -> None:
+        # # for cancelling fat-fingered order
+        # if self.circuit_breaker_activated:
+        #     return
         if self.circuit_breaker:
             return
         
@@ -193,6 +197,7 @@ class InstitutionalTraderAgent(TradingAgent):
 
         if isinstance(message, CircuitBreakerStart):
             self.circuit_breaker = True
+            # self.circuit_breaker_activated = True
         elif isinstance(message, CircuitBreakerEnd):
             self.circuit_breaker = False
 

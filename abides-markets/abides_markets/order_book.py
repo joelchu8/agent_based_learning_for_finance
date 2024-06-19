@@ -21,6 +21,7 @@ from .messages.orderbook import (
 from .orders import LimitOrder, MarketOrder, Order, Side
 from .price_level import PriceLevel
 
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class OrderBook:
         sell_transactions: An ordered list of all previous sell transaction timestamps and quantities.
     """
 
-    def __init__(self, owner: Agent, symbol: str) -> None:
+    def __init__(self, owner: Agent, symbol: str, trigger: Optional[str] = None, message: Optional[str] = None) -> None:
         """Creates a new OrderBook class instance for a single symbol.
 
         Arguments:
@@ -72,14 +73,111 @@ class OrderBook:
         self.buy_transactions: List[Tuple[NanosecondTime, int]] = []
         self.sell_transactions: List[Tuple[NanosecondTime, int]] = []
 
-        self.executed_prices = []
+        # tiered circuit breakers
+        self.circuit_breaker_count = 0
+
+        # moving average volume trigger
+        self.volume = 0
+
+        # minimum resting time
+        self.minimum_resting_time = 1e6
+
+        # standard volume trigger
+        self.volume_threshold = 3000
+        
+        self.opening_price = 10000
+
+        self.trigger = trigger
+
+        self.message = message
     
-    def get_executed_prices(self):
-        prices = self.executed_prices.copy()
-        print(len(prices))
-        self.executed_prices.clear()
-        # print(prices)
-        return prices
+    # moving average volume trigger
+    def get_volume(self):
+        last_volume = self.volume
+        self.volume = 0
+        return last_volume
+    
+    def send_message(self):
+        if self.message == "CIRCUIT_BREAKER":
+            self.owner.activate_circuit_breaker()
+        if self.message == "TICK_SIZE_CHANGE":
+            self.owner.change_tick_size()
+
+
+    def check_circuit_breaker(self, price):
+        if self.trigger == "VOLUME":
+            if len(self.owner.price_deque) > self.volume_threshold:
+                self.owner.activate_circuit_breaker()
+                return True
+        elif self.trigger == "IMBALANCE":
+            imbalance, side = self.get_imbalance()
+            if side == Side.ASK and imbalance >= 1.0:
+                print(imbalance)
+                self.owner.activate_circuit_breaker()
+                return True
+        elif self.trigger == "LULD":
+            average = self.owner.get_average()
+            percentage_change = abs(price - average) / average
+            if percentage_change >= self.owner.circuit_breaker_threshold_three:
+                self.owner.activate_circuit_breaker()
+                return True
+        elif self.trigger == "DEVIATION":
+            percentage_change = abs(price - self.opening_price) / self.opening_price
+            if percentage_change >= self.owner.circuit_breaker_threshold:
+                self.owner.activate_circuit_breaker()
+                return True
+            
+        return False
+
+    
+    # # VOLUME-BASED TRIGGER
+    # def check_circuit_breaker(self, price):
+    #     if len(self.owner.price_deque) > self.volume_threshold:
+    #         self.owner.activate_circuit_breaker()
+    #         return True
+        
+    #     return False
+
+    # # imbalance trigger
+    # def check_circuit_breaker(self, price):
+    #     imbalance, side = self.get_imbalance()
+    #     if side == Side.ASK and imbalance >= 1.0:
+    #         print(imbalance)
+    #         self.owner.activate_circuit_breaker()
+    #         return True
+    
+    #     return False
+
+
+    # # LULD
+    # def check_circuit_breaker(self, price):
+    #     average = self.owner.get_average()
+    #     percentage_change = abs(price - average) / average
+
+    #     if self.circuit_breaker_count == 0 and percentage_change >= self.owner.circuit_breaker_threshold:
+    #         self.owner.activate_circuit_breaker()
+    #         self.circuit_breaker_count += 1
+    #         # self.cancel_erroneous_trades(average)
+    #         return True
+    #     elif self.circuit_breaker_count == 1 and percentage_change >= self.owner.circuit_breaker_threshold_two:
+    #         self.owner.activate_circuit_breaker()
+    #         self.circuit_breaker_count += 1
+    #         return True
+    #     elif percentage_change >= self.owner.circuit_breaker_threshold_three:
+    #         self.owner.activate_circuit_breaker()
+    #         return True
+
+    #     return False
+
+    # # DEVIATION FROM OPENING PRICE
+    # def check_circuit_breaker(self, price):
+    #     percentage_change = abs(price - 10000) / 10000
+    #     if percentage_change >= self.owner.circuit_breaker_threshold:
+    #         self.owner.activate_circuit_breaker()
+    #         self.cancel_erroneous_trades(10000)
+    #         return True
+        
+    #     return False
 
     def handle_limit_order(self, order: LimitOrder, quiet: bool = False) -> None:
         """Matches a limit order or adds it to the order book.
@@ -116,12 +214,16 @@ class OrderBook:
         executed: List[Tuple[int, int]] = []
 
         while True:
+
             matched_order = self.execute_order(order)
 
             if matched_order is not None:
                 # Accumulate the volume and average share price of the currently executing inbound trade.
                 assert matched_order.fill_price is not None
                 executed.append((matched_order.quantity, matched_order.fill_price))
+
+                # if self.check_circuit_breaker(matched_order.fill_price):
+                #     break
 
                 if order.quantity <= 0:
                     break
@@ -197,10 +299,14 @@ class OrderBook:
         order = deepcopy(order)
 
         while order.quantity > 0:
-            if self.execute_order(order) is None:
+            matched_order = self.execute_order(order)
+            if matched_order is None:
                 break
+            
+            # if self.check_circuit_breaker(matched_order.fill_price):
+            #     break
 
-    def execute_order(self, order: Order) -> Optional[Order]:
+    def execute_order(self, order: Order):
         """Finds a single best match for this order, without regard for quantity.
 
         Returns the matched order or None if no match found.  DOES remove,
@@ -332,7 +438,8 @@ class OrderBook:
                 # append current OB state to book_log2
                 self.append_book_log2()
 
-            self.executed_prices.append(matched_order.fill_price)
+            # self.owner.update_deque(matched_order)
+            # self.executed_prices.append(matched_order.fill_price)
 
             # Return (only the executed portion of) the matched order.
             return matched_order
@@ -441,6 +548,10 @@ class OrderBook:
             A bool indicating if the order cancellation was successful.
         """
 
+        # minimum resting time
+        if self.owner.current_time - order.time_placed <= self.minimum_resting_time:
+                    return False
+
         book = self.bids if order.side.is_bid() else self.asks
 
         # If there are no orders on this side of the book, there is nothing to do.
@@ -510,6 +621,10 @@ class OrderBook:
             new_order: The new order to replace the old order with.
         """
 
+        # minimum resting time
+        if self.owner.current_time - order.time_placed <= self.minimum_resting_time:
+                    return None
+
         if order.order_id != new_order.order_id:
             return
 
@@ -557,6 +672,10 @@ class OrderBook:
             order: The existing order in the order book.
             new_order: The new order to replace the old order with.
         """
+
+        # minimum resting time
+        if self.owner.current_time - order.time_placed <= self.minimum_resting_time:
+                    return None
 
         if order.order_id == 19653081:
             print("inside OB partialCancel")

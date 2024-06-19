@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 import numpy as np
 
 from abides_core import Message, NanosecondTime
-from abides_core.utils import fmt_ts
+from abides_core.utils import fmt_ts, str_to_ns
 
 from ..messages.market import (
     MarketClosePriceRequestMsg,
@@ -43,6 +43,7 @@ from ..messages.query import (
     QueryTransactedVolMsg,
     QueryTransactedVolResponseMsg,
 )
+from ..messages.tick_size import TickSizeChange
 from ..orders import Order, LimitOrder, MarketOrder, Side
 from .financial_agent import FinancialAgent
 from .exchange_agent import ExchangeAgent
@@ -143,6 +144,7 @@ class TradingAgent(FinancialAgent):
         # Remember whether we have already passed the exchange close time, as far
         # as we know.
         self.mkt_closed: bool = False
+        self.tick_size = 1
 
     # Simulation lifecycle messages.
 
@@ -159,7 +161,8 @@ class TradingAgent(FinancialAgent):
 
         # Find an exchange with which we can place orders.  It is guaranteed
         # to exist by now (if there is one).
-        self.exchange_id: int = self.kernel.find_agents_by_type(CircuitBreakerExchangeAgent)[0]
+        # self.exchange_id: int = self.kernel.find_agents_by_type(CircuitBreakerExchangeAgent)[0]
+        self.exchange_id: int = self.kernel.find_agents_by_type(ExchangeAgent)[0]
 
         logger.debug(
             f"Agent {self.id} requested agent of type Agent.ExchangeAgent.  Given Agent ID: {self.exchange_id}"
@@ -359,6 +362,9 @@ class TradingAgent(FinancialAgent):
 
         elif isinstance(message, MarketDataMsg):
             self.handle_market_data(message)
+        
+        elif isinstance(message, TickSizeChange):
+            self.tick_size = message.new_tick_size
 
         # Now do we know the market hours?
         have_mkt_hours = self.mkt_open is not None and self.mkt_close is not None
@@ -533,6 +539,8 @@ class TradingAgent(FinancialAgent):
                 the order.
             tag:
         """
+
+        limit_price = self.tick_size * round(limit_price / self.tick_size)
 
         order = self.create_limit_order(
             symbol,
